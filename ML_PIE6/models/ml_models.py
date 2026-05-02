@@ -126,7 +126,7 @@ class DemandForecaster:
                 self.models[sk] = ("xgb", m, last_row)
 
             metrics[int(sk)] = round(mae, 2)
-            if i % 50 == 0:
+            if i % 200 == 0 or i == total:
                 print(f"  [{i}/{total}] produtos treinados...")
 
         joblib.dump(
@@ -207,8 +207,11 @@ class DemandForecaster:
 
 class StockAlertClassifier:
     """
-    Classifica produtos em NORMAL / BAIXO / CRITICO.
-    Labels baseados no histórico COMPLETO do DW (não em janela recente).
+    Classifica produtos em INATIVO / CRITICO / BAIXO / NORMAL.
+    INATIVO  — sem nenhuma venda nos últimos 12 meses.
+    CRITICO  — queda forte (TrendPct < -40) em produtos que ainda vendem.
+    BAIXO    — volume no tercil inferior ou queda moderada (TrendPct < -15).
+    NORMAL   — estoque saudável.
     """
 
     FEAT_COLS = [
@@ -249,23 +252,19 @@ class StockAlertClassifier:
     def _create_labels(self, df: pd.DataFrame) -> pd.Series:
         """
         Regras baseadas no volume total e tendência do DW.
-        Usa percentis do próprio dataset para definir os thresholds,
-        evitando que todos caiam na mesma classe.
+        p33 calculado apenas sobre produtos com vendas > 0 para não
+        distorcer o limiar com a massa de inativos.
         """
-        p33 = df["TotalQty12m"].quantile(0.33)
-        p66 = df["TotalQty12m"].quantile(0.66)
+        ativos = df[df["TotalQty12m"] > 0]["TotalQty12m"]
+        p33 = ativos.quantile(0.33) if len(ativos) > 0 else 1
 
         def label(r):
-            # Sem nenhuma venda no período → crítico
             if r["TotalQty12m"] == 0:
-                return "CRITICO"
-            # Queda forte na tendência recente → crítico
+                return "INATIVO"
             if r["TrendPct"] < -40:
                 return "CRITICO"
-            # Volume baixo (tercil inferior) ou queda moderada → baixo
             if r["TotalQty12m"] <= p33 or r["TrendPct"] < -15:
                 return "BAIXO"
-            # Volume alto (tercil superior) → normal
             return "NORMAL"
 
         return df.apply(label, axis=1)
@@ -276,7 +275,8 @@ class StockAlertClassifier:
 
         # Log da distribuição de labels
         dist = y.value_counts()
-        print(f"  Labels: NORMAL={dist.get('NORMAL',0)} | BAIXO={dist.get('BAIXO',0)} | CRITICO={dist.get('CRITICO',0)}")
+        print(f"  Labels: NORMAL={dist.get('NORMAL',0)} | BAIXO={dist.get('BAIXO',0)} "
+              f"| CRITICO={dist.get('CRITICO',0)} | INATIVO={dist.get('INATIVO',0)}")
 
         X     = self.scaler.fit_transform(df[self.FEAT_COLS])
         y_enc = self.label_enc.fit_transform(y)
@@ -309,7 +309,7 @@ class StockAlertClassifier:
                   "SalesConsistency"]].copy()
         out["StockStatus"] = labels
         out["Confidence"]  = np.round(probs * 100, 1)
-        priority = {"CRITICO": 0, "BAIXO": 1, "NORMAL": 2}
+        priority = {"CRITICO": 0, "BAIXO": 1, "NORMAL": 2, "INATIVO": 3}
         out["_sort"] = out["StockStatus"].map(priority)
         return out.sort_values(["_sort", "TrendPct"]).drop("_sort", axis=1).reset_index(drop=True)
 
@@ -351,7 +351,12 @@ class SalesPatternAnalyzer:
         df["Cluster"] = self.model.fit_predict(X)
 
         cluster_vol = df.groupby("Cluster")["AvgMonthlyQty"].median().sort_values(ascending=False)
-        labels_list = ["Alta Rotatividade", "Venda Sazonal", "Venda Estável", "Baixa Rotatividade"]
+        base_labels = [
+            "Alta Rotatividade", "Rotatividade Alta-Media", "Venda Sazonal",
+            "Venda Estável", "Baixa Rotatividade", "Baixíssima Rotatividade",
+            "Nicho A", "Nicho B",
+        ]
+        labels_list = base_labels[:self.n_clusters]
         self._label_map = {cid: labels_list[i] for i, cid in enumerate(cluster_vol.index)}
         df["Pattern"] = df["Cluster"].map(self._label_map)
 
@@ -376,6 +381,17 @@ class SalesPatternAnalyzer:
                 "avg_trend_pct":   round(float(g["TrendPct"].mean()), 2),
             })
         return sorted(summary, key=lambda x: x["avg_monthly_qty"], reverse=True)
+
+    def predict(self, features_df: pd.DataFrame) -> pd.DataFrame:
+        """Segmenta produtos usando o modelo já treinado (sem retreinar)."""
+        df = features_df.dropna(subset=self.FEAT_COLS).copy()
+        X  = self.scaler.transform(df[self.FEAT_COLS])
+        df["Cluster"] = self.model.predict(X)
+        df["Pattern"] = df["Cluster"].map(self._label_map)
+        return df[["sk_produto", "ProductID", "ProductName", "Category",
+                   "Subcategory", "AvgMonthlyQty", "StdDevQty",
+                   "MonthsWithSales", "TrendPct", "AvgMargin",
+                   "Cluster", "Pattern"]].reset_index(drop=True)
 
     def load(self):
         path = os.path.join(MODEL_DIR, "pattern_model.pkl")

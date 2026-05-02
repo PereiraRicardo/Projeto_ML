@@ -1,8 +1,13 @@
 """
-Módulo de conexão e extração de dados - adventureworks_dw
-Banco: SQL Server local | Usuário: sa | DB: adventureworks_dw
-Tabelas: fato_vendas, dim_produto, dim_cliente, dim_vendedor,
-         dim_territorio, dim_promocao, dim_tempo
+Módulo de conexão e extração de dados — ELSONS_DW
+Banco: SQL Server local | DB: ELSONS_DW
+Fato:  FT_VENDAS
+Dims:  DIM_PRODUTO, DIM_CLIENTE, DIM_VENDEDOR, DIM_TEMPO
+
+IMPORTANTE: FT_VENDAS.IDProduto é FK para DIM_PRODUTO.IDSK (surrogate),
+            não para DIM_PRODUTO.IDProduto (natural key).
+            Agrupamentos usam dp.IDProduto (chave natural) como sk_produto.
+            Produtos com IDProduto IS NULL (~10%% das vendas) são excluídos.
 """
 
 import pyodbc
@@ -11,12 +16,9 @@ from sqlalchemy import create_engine, text
 from urllib.parse import quote_plus
 
 
-# ─────────────────────────────────────────
-# CONFIGURAÇÃO — mesma do recreate_dw_tables.py
-# ─────────────────────────────────────────
 DB_CONFIG = {
-    "server":   "localhost",
-    "database": "adventureworks_dw",
+    "server":   "HomeOffice\\SQLEXPRESS",
+    "database": "ELSONS_DW",
     "username": "sa",
     "password": "123456",
     "driver":   "ODBC Driver 17 for SQL Server",
@@ -35,7 +37,6 @@ def get_connection_string() -> str:
 
 
 def get_engine():
-    """Engine SQLAlchemy (usado pelo pandas para queries grandes)."""
     conn_str = quote_plus(get_connection_string())
     return create_engine(
         f"mssql+pyodbc:///?odbc_connect={conn_str}",
@@ -44,16 +45,14 @@ def get_engine():
 
 
 def get_conn():
-    """Conexão pyodbc direta (usada para KPIs e queries simples)."""
     return pyodbc.connect(get_connection_string())
 
 
 def test_connection() -> dict:
-    """Testa a conexão e retorna status com contagem de linhas."""
     try:
         conn = get_conn()
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM fato_vendas")
+        cursor.execute("SELECT COUNT(*) FROM FT_VENDAS")
         row_count = cursor.fetchone()[0]
         conn.close()
         return {"ok": True, "fato_vendas_rows": row_count}
@@ -68,33 +67,43 @@ def test_connection() -> dict:
 def fetch_sales_history(months: int = 36) -> pd.DataFrame:
     """
     Histórico mensal de vendas por produto.
-    Usa o período real do DW (detectado automaticamente via MAX/MIN da dim_tempo).
+    Join: FT_VENDAS.IDProduto = DIM_PRODUTO.IDSK (surrogate).
+    Agrupamento por DIM_PRODUTO.IDProduto (natural key).
     Usado em: DemandForecaster.train()
     """
     query = f"""
+    ;WITH refDate AS (
+        SELECT DATEFROMPARTS(YEAR(MAX(dt.Data)), MONTH(MAX(dt.Data)), 1) AS maxMonth
+        FROM FT_VENDAS fv
+        JOIN DIM_TEMPO dt ON fv.IDTempo = dt.IDSK
+        WHERE fv.Quant > 0 AND fv.TotLiq > 0
+    )
     SELECT
-        fv.sk_produto,
-        dp.nk_produto                               AS ProductID,
-        dp.nome_produto                             AS ProductName,
-        dp.categoria                                AS Category,
-        dp.subcategoria                             AS Subcategory,
-        CAST(DATEFROMPARTS(dt.ano, dt.mes, 1) AS DATE) AS SaleMonth,
-        SUM(fv.quantidade)                          AS TotalQty,
-        SUM(fv.receita_liquida)                     AS TotalRevenue,
-        SUM(fv.lucro_bruto)                         AS TotalProfit,
-        AVG(fv.preco_unitario)                      AS AvgUnitPrice,
-        AVG(fv.margem_percentual)                   AS AvgMargin,
-        COUNT(DISTINCT fv.nk_pedido)                AS OrderCount
-    FROM fato_vendas fv
-    JOIN dim_tempo   dt ON fv.sk_tempo   = dt.sk_tempo
-    JOIN dim_produto dp ON fv.sk_produto = dp.sk_produto
-    WHERE dp.registro_atual = 1
-      AND DATEFROMPARTS(dt.ano, dt.mes, 1) >=
-          DATEADD(MONTH, -{months}, (SELECT CAST(DATEFROMPARTS(MAX(ano), MAX(mes), 1) AS DATE) FROM dim_tempo))
+        dp.IDProduto                                        AS sk_produto,
+        MAX(dp.Cod)                                         AS ProductID,
+        MAX(dp.Descri)                                      AS ProductName,
+        MAX(dp.Grupo)                                       AS Category,
+        MAX(dp.SubGrp)                                      AS Subcategory,
+        DATEFROMPARTS(YEAR(dt.Data), MONTH(dt.Data), 1)    AS SaleMonth,
+        SUM(fv.Quant)                                       AS TotalQty,
+        SUM(fv.TotLiq)                                      AS TotalRevenue,
+        SUM(fv.TotLiq * ISNULL(dp.Margem, 0) / 100)        AS TotalProfit,
+        AVG(fv.PrVenda)                                     AS AvgUnitPrice,
+        AVG(ISNULL(dp.Margem, 0))                           AS AvgMargin,
+        COUNT(DISTINCT fv.IDPed)                            AS OrderCount
+    FROM FT_VENDAS fv
+    JOIN DIM_TEMPO   dt ON fv.IDTempo   = dt.IDSK
+    JOIN DIM_PRODUTO dp ON fv.IDProduto = dp.IDSK
+    CROSS JOIN refDate rd
+    WHERE fv.Quant > 0
+      AND fv.TotLiq > 0
+      AND dp.IDProduto IS NOT NULL
+      AND DATEFROMPARTS(YEAR(dt.Data), MONTH(dt.Data), 1) >=
+          DATEADD(MONTH, -{months}, rd.maxMonth)
     GROUP BY
-        fv.sk_produto, dp.nk_produto, dp.nome_produto,
-        dp.categoria, dp.subcategoria, dt.ano, dt.mes
-    ORDER BY SaleMonth, dp.nk_produto
+        dp.IDProduto,
+        YEAR(dt.Data), MONTH(dt.Data)
+    ORDER BY SaleMonth, dp.IDProduto
     """
     return pd.read_sql(query, get_engine())
 
@@ -102,210 +111,228 @@ def fetch_sales_history(months: int = 36) -> pd.DataFrame:
 def fetch_product_features() -> pd.DataFrame:
     """
     Features por produto para os modelos de ML.
-    Usa o histórico COMPLETO do DW dividido em dois períodos:
-      - Período total: todos os dados disponíveis (2011-2014)
-      - Período recente: segunda metade do período total (tendência)
-    Isso evita zeros artificiais causados por janelas fixas de 12/3 meses.
+    Join: FT_VENDAS.IDProduto = DIM_PRODUTO.IDSK (surrogate).
+    Outer select usa versão mais recente (MAX IDSK por IDProduto).
+    Usado em: StockAlertClassifier.train(), SalesPatternAnalyzer.train()
     """
     query = """
-    DECLARE @dt_min DATE = (SELECT CAST(DATEFROMPARTS(MIN(ano), MIN(mes), 1) AS DATE) FROM dim_tempo)
-    DECLARE @dt_max DATE = (SELECT CAST(DATEFROMPARTS(MAX(ano), MAX(mes), 1) AS DATE) FROM dim_tempo)
+    DECLARE @dt_min DATE = (
+        SELECT MIN(dt.Data) FROM FT_VENDAS fv
+        JOIN DIM_TEMPO dt ON fv.IDTempo = dt.IDSK
+        WHERE fv.Quant > 0 AND fv.TotLiq > 0
+    )
+    DECLARE @dt_max DATE = (
+        SELECT MAX(dt.Data) FROM FT_VENDAS fv
+        JOIN DIM_TEMPO dt ON fv.IDTempo = dt.IDSK
+        WHERE fv.Quant > 0 AND fv.TotLiq > 0
+    )
     DECLARE @dt_mid DATE = DATEADD(MONTH, DATEDIFF(MONTH, @dt_min, @dt_max) / 2, @dt_min)
 
+    ;WITH dpLatest AS (
+        SELECT IDProduto, MAX(IDSK) AS IDSK
+        FROM DIM_PRODUTO
+        WHERE IDProduto IS NOT NULL
+        GROUP BY IDProduto
+    ),
+    stot AS (
+        SELECT
+            dp.IDProduto,
+            SUM(fv.Quant)                                       AS TotalQtyAll,
+            SUM(fv.TotLiq)                                      AS TotalRevenueAll,
+            SUM(fv.TotLiq * ISNULL(dp.Margem, 0) / 100)        AS TotalProfitAll,
+            AVG(CAST(fv.Quant AS FLOAT))                        AS AvgMonthlyQty,
+            ISNULL(STDEV(CAST(fv.Quant AS FLOAT)), 0)           AS StdDevQty,
+            COUNT(DISTINCT
+                CAST(YEAR(dt.Data) AS VARCHAR(4)) + '-'
+                + RIGHT('0' + CAST(MONTH(dt.Data) AS VARCHAR(2)), 2)
+            )                                                   AS MonthsWithSales,
+            COUNT(DISTINCT fv.IDPed)                            AS OrderCount
+        FROM FT_VENDAS fv
+        JOIN DIM_TEMPO   dt ON fv.IDTempo   = dt.IDSK
+        JOIN DIM_PRODUTO dp ON fv.IDProduto = dp.IDSK
+        WHERE fv.Quant > 0 AND fv.TotLiq > 0
+          AND dp.IDProduto IS NOT NULL
+        GROUP BY dp.IDProduto
+    ),
+    srec AS (
+        SELECT
+            dp.IDProduto,
+            SUM(fv.Quant)                   AS TotalQtyRec,
+            AVG(CAST(fv.Quant AS FLOAT))    AS AvgMonthlyQtyRec
+        FROM FT_VENDAS fv
+        JOIN DIM_TEMPO   dt ON fv.IDTempo   = dt.IDSK
+        JOIN DIM_PRODUTO dp ON fv.IDProduto = dp.IDSK
+        WHERE fv.Quant > 0 AND fv.TotLiq > 0
+          AND dp.IDProduto IS NOT NULL
+          AND dt.Data >= @dt_mid
+        GROUP BY dp.IDProduto
+    )
     SELECT
-        dp.sk_produto,
-        dp.nk_produto                               AS ProductID,
-        dp.nome_produto                             AS ProductName,
-        dp.categoria                                AS Category,
-        dp.subcategoria                             AS Subcategory,
-        ISNULL(dp.preco_lista,   0)                 AS ListPrice,
-        ISNULL(dp.custo_padrao,  0)                 AS StandardCost,
-        ISNULL(dp.classe,        '')                AS ProductClass,
-        ISNULL(dp.linha_produto, '')                AS ProductLine,
+        dp.IDProduto                                            AS sk_produto,
+        dp.Cod                                                  AS ProductID,
+        dp.Descri                                               AS ProductName,
+        dp.Grupo                                                AS Category,
+        dp.SubGrp                                               AS Subcategory,
+        ISNULL(dp.Uprc, 0)                                      AS ListPrice,
+        ISNULL(dp.Uprc * (1 - ISNULL(dp.Margem, 0) / 100), 0)  AS StandardCost,
+        ''                                                       AS ProductClass,
+        ''                                                       AS ProductLine,
 
-        -- Período TOTAL (histórico completo)
-        ISNULL(stot.TotalQtyAll,      0)            AS TotalQty12m,
-        ISNULL(stot.TotalRevenueAll,  0)            AS TotalRevenue12m,
-        ISNULL(stot.TotalProfitAll,   0)            AS TotalProfit12m,
-        ISNULL(stot.AvgMonthlyQty,    0)            AS AvgMonthlyQty,
-        ISNULL(stot.StdDevQty,        0)            AS StdDevQty,
-        ISNULL(stot.AvgMargin,        0)            AS AvgMargin,
-        ISNULL(stot.MonthsWithSales,  0)            AS MonthsWithSales,
-        ISNULL(stot.OrderCount,       0)            AS OrderCount,
+        ISNULL(stot.TotalQtyAll,      0)                        AS TotalQty12m,
+        ISNULL(stot.TotalRevenueAll,  0)                        AS TotalRevenue12m,
+        ISNULL(stot.TotalProfitAll,   0)                        AS TotalProfit12m,
+        ISNULL(stot.AvgMonthlyQty,    0)                        AS AvgMonthlyQty,
+        ISNULL(stot.StdDevQty,        0)                        AS StdDevQty,
+        ISNULL(dp.Margem,             0)                        AS AvgMargin,
+        ISNULL(stot.MonthsWithSales,  0)                        AS MonthsWithSales,
+        ISNULL(stot.OrderCount,       0)                        AS OrderCount,
 
-        -- Período RECENTE (segunda metade — tendência)
-        ISNULL(srec.TotalQtyRec,      0)            AS TotalQty3m,
-        ISNULL(srec.AvgMonthlyQtyRec, 0)            AS AvgMonthlyQty3m,
+        ISNULL(srec.TotalQtyRec,      0)                        AS TotalQty3m,
+        ISNULL(srec.AvgMonthlyQtyRec, 0)                        AS AvgMonthlyQty3m,
 
-        -- Tendência: período recente vs média histórica
         CASE
             WHEN ISNULL(stot.AvgMonthlyQty, 0) > 0
             THEN ROUND(
                 (ISNULL(srec.AvgMonthlyQtyRec, 0) - stot.AvgMonthlyQty)
                 / stot.AvgMonthlyQty * 100, 2)
             ELSE 0
-        END                                         AS TrendPct
+        END                                                     AS TrendPct
 
-    FROM dim_produto dp
-
-    -- Subquery período TOTAL
-    LEFT JOIN (
-        SELECT
-            fv.sk_produto,
-            SUM(fv.quantidade)                          AS TotalQtyAll,
-            SUM(fv.receita_liquida)                     AS TotalRevenueAll,
-            SUM(fv.lucro_bruto)                         AS TotalProfitAll,
-            AVG(CAST(fv.quantidade AS FLOAT))           AS AvgMonthlyQty,
-            ISNULL(STDEV(CAST(fv.quantidade AS FLOAT)), 0) AS StdDevQty,
-            AVG(fv.margem_percentual)                   AS AvgMargin,
-            COUNT(DISTINCT
-                CAST(dt.ano AS VARCHAR(4)) + '-'
-                + RIGHT('0' + CAST(dt.mes AS VARCHAR(2)), 2)
-            )                                           AS MonthsWithSales,
-            COUNT(DISTINCT fv.nk_pedido)                AS OrderCount
-        FROM fato_vendas fv
-        JOIN dim_tempo dt ON fv.sk_tempo = dt.sk_tempo
-        GROUP BY fv.sk_produto
-    ) stot ON dp.sk_produto = stot.sk_produto
-
-    -- Subquery período RECENTE (segunda metade do DW)
-    LEFT JOIN (
-        SELECT
-            fv.sk_produto,
-            SUM(fv.quantidade)                          AS TotalQtyRec,
-            AVG(CAST(fv.quantidade AS FLOAT))           AS AvgMonthlyQtyRec
-        FROM fato_vendas fv
-        JOIN dim_tempo dt ON fv.sk_tempo = dt.sk_tempo
-        WHERE DATEFROMPARTS(dt.ano, dt.mes, 1) >= @dt_mid
-        GROUP BY fv.sk_produto
-    ) srec ON dp.sk_produto = srec.sk_produto
-
-    WHERE dp.registro_atual = 1
+    FROM dpLatest dpl
+    JOIN DIM_PRODUTO dp  ON dp.IDSK      = dpl.IDSK
+    LEFT JOIN stot       ON dp.IDProduto = stot.IDProduto
+    LEFT JOIN srec       ON dp.IDProduto = srec.IDProduto
     """
     return pd.read_sql(query, get_engine())
 
 
 def fetch_sales_by_territory(months: int = 12) -> pd.DataFrame:
-    """Vendas mensais por território. Usado para análise regional."""
+    """Vendas mensais agrupadas por estado do cliente."""
     query = f"""
+    ;WITH dcLatest AS (
+        SELECT IDCliente, MAX(IDSK) AS IDSK
+        FROM DIM_CLIENTE
+        GROUP BY IDCliente
+    ),
+    refDate AS (
+        SELECT DATEFROMPARTS(YEAR(MAX(dt.Data)), MONTH(MAX(dt.Data)), 1) AS maxMonth
+        FROM FT_VENDAS fv
+        JOIN DIM_TEMPO dt ON fv.IDTempo = dt.IDSK
+        WHERE fv.Quant > 0 AND fv.TotLiq > 0
+    )
     SELECT
-        dter.nome_territorio                        AS Territory,
-        dter.pais                                   AS Country,
-        dter.grupo                                  AS Region,
-        dt.ano                                      AS Year,
-        dt.mes                                      AS Month,
-        dt.trimestre                                AS Quarter,
-        dt.nome_mes                                 AS MonthName,
-        SUM(fv.quantidade)                          AS TotalQty,
-        SUM(fv.receita_liquida)                     AS TotalRevenue,
-        SUM(fv.lucro_bruto)                         AS TotalProfit,
-        COUNT(DISTINCT fv.nk_pedido)                AS OrderCount,
-        COUNT(DISTINCT fv.sk_cliente)               AS UniqueCustomers
-    FROM fato_vendas fv
-    JOIN dim_tempo      dt   ON fv.sk_tempo      = dt.sk_tempo
-    JOIN dim_territorio dter ON fv.sk_territorio = dter.sk_territorio
-    WHERE DATEFROMPARTS(dt.ano, dt.mes, 1) >=
-          CAST(DATEADD(MONTH, -{months}, DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1)) AS DATE)
+        ISNULL(dc.Est, 'N/I')                               AS Territory,
+        ISNULL(dc.Est, 'N/I')                               AS Country,
+        'Brasil'                                             AS Region,
+        YEAR(dt.Data)                                        AS Year,
+        MONTH(dt.Data)                                       AS Month,
+        DATEPART(QUARTER, dt.Data)                           AS Quarter,
+        dt.NomeMes                                           AS MonthName,
+        SUM(fv.Quant)                                        AS TotalQty,
+        SUM(fv.TotLiq)                                       AS TotalRevenue,
+        SUM(fv.TotLiq * ISNULL(dp.Margem, 0) / 100)         AS TotalProfit,
+        COUNT(DISTINCT fv.IDPed)                             AS OrderCount,
+        COUNT(DISTINCT fv.IDCliente)                         AS UniqueCustomers
+    FROM FT_VENDAS fv
+    JOIN DIM_TEMPO   dt  ON fv.IDTempo   = dt.IDSK
+    JOIN DIM_PRODUTO dp  ON fv.IDProduto = dp.IDSK
+    JOIN dcLatest    dcl ON fv.IDCliente = dcl.IDCliente
+    JOIN DIM_CLIENTE dc  ON dc.IDSK      = dcl.IDSK
+    CROSS JOIN refDate rd
+    WHERE fv.Quant > 0
+      AND fv.TotLiq > 0
+      AND DATEFROMPARTS(YEAR(dt.Data), MONTH(dt.Data), 1) >=
+          DATEADD(MONTH, -{months}, rd.maxMonth)
     GROUP BY
-        dter.nome_territorio, dter.pais, dter.grupo,
-        dt.ano, dt.mes, dt.trimestre, dt.nome_mes
+        dc.Est,
+        YEAR(dt.Data), MONTH(dt.Data),
+        DATEPART(QUARTER, dt.Data), dt.NomeMes
     ORDER BY Year, Month, Territory
     """
     return pd.read_sql(query, get_engine())
 
 
 def fetch_seller_performance(months: int = 12) -> pd.DataFrame:
-    """Performance e atingimento de cota dos vendedores."""
-    query = f"""
+    """Performance dos vendedores. Cota e comissão retornam 0 (não disponíveis)."""
+    query = """
+    ;WITH dvLatest AS (
+        SELECT IDVendedor, MAX(IDSK) AS IDSK
+        FROM DIM_VENDEDOR
+        GROUP BY IDVendedor
+    )
     SELECT
-        dv.nk_vendedor                              AS SellerID,
-        dv.nome_completo                            AS SellerName,
-        dv.territorio                               AS Territory,
-        ISNULL(dv.cota_anual, 0)                    AS AnnualQuota,
-        ISNULL(dv.comissao_pct, 0)                  AS CommissionPct,
-        SUM(fv.receita_liquida)                     AS TotalRevenue,
-        SUM(fv.lucro_bruto)                         AS TotalProfit,
-        SUM(fv.quantidade)                          AS TotalQty,
-        COUNT(DISTINCT fv.nk_pedido)                AS OrderCount,
-        COUNT(DISTINCT fv.sk_cliente)               AS UniqueCustomers,
-        AVG(fv.margem_percentual)                   AS AvgMargin,
-        CASE
-            WHEN ISNULL(dv.cota_anual, 0) > 0
-            THEN ROUND(SUM(fv.receita_liquida) / dv.cota_anual * 100, 2)
-            ELSE NULL
-        END                                         AS QuotaAttainmentPct
-    FROM fato_vendas fv
-    JOIN dim_tempo    dt ON fv.sk_tempo    = dt.sk_tempo
-    JOIN dim_vendedor dv ON fv.sk_vendedor = dv.sk_vendedor
-    GROUP BY
-        dv.nk_vendedor, dv.nome_completo, dv.territorio,
-        dv.cota_anual, dv.comissao_pct
+        dv.IDVendedor                                        AS SellerID,
+        dv.Nome                                              AS SellerName,
+        ISNULL(dv.Equipe, dv.Mun)                           AS Territory,
+        0                                                    AS AnnualQuota,
+        0                                                    AS CommissionPct,
+        SUM(fv.TotLiq)                                       AS TotalRevenue,
+        SUM(fv.TotLiq * ISNULL(dp.Margem, 0) / 100)         AS TotalProfit,
+        SUM(fv.Quant)                                        AS TotalQty,
+        COUNT(DISTINCT fv.IDPed)                             AS OrderCount,
+        COUNT(DISTINCT fv.IDCliente)                         AS UniqueCustomers,
+        AVG(ISNULL(dp.Margem, 0))                            AS AvgMargin,
+        NULL                                                 AS QuotaAttainmentPct
+    FROM FT_VENDAS fv
+    JOIN DIM_PRODUTO  dp  ON fv.IDProduto  = dp.IDSK
+    JOIN dvLatest     dvl ON fv.IDVendedor = dvl.IDVendedor
+    JOIN DIM_VENDEDOR dv  ON dv.IDSK       = dvl.IDSK
+    WHERE fv.Quant > 0 AND fv.TotLiq > 0
+    GROUP BY dv.IDVendedor, dv.Nome, dv.Equipe, dv.Mun
     ORDER BY TotalRevenue DESC
     """
     return pd.read_sql(query, get_engine())
 
 
 def fetch_promotion_impact() -> pd.DataFrame:
-    """Impacto de cada promoção nas vendas e margem."""
-    query = """
-    SELECT
-        dpr.descricao                               AS PromotionName,
-        dpr.tipo_desconto                           AS DiscountType,
-        dpr.categoria                               AS PromotionCategory,
-        ISNULL(dpr.percentual_desconto, 0)          AS DiscountPct,
-        COUNT(DISTINCT fv.nk_pedido)                AS OrderCount,
-        SUM(fv.quantidade)                          AS TotalQty,
-        SUM(fv.receita_bruta)                       AS GrossRevenue,
-        SUM(fv.receita_liquida)                     AS NetRevenue,
-        SUM(fv.lucro_bruto)                         AS TotalProfit,
-        SUM(fv.desconto_unitario * fv.quantidade)   AS TotalDiscount,
-        AVG(fv.margem_percentual)                   AS AvgMargin
-    FROM fato_vendas fv
-    JOIN dim_promocao dpr ON fv.sk_promocao = dpr.sk_promocao
-    GROUP BY
-        dpr.descricao, dpr.tipo_desconto,
-        dpr.categoria, dpr.percentual_desconto
-    ORDER BY NetRevenue DESC
-    """
-    return pd.read_sql(query, get_engine())
+    """Sem dim_promocao no ELSONS_DW. Retorna DataFrame vazio compatível."""
+    return pd.DataFrame(columns=[
+        "PromotionName", "DiscountType", "PromotionCategory",
+        "DiscountPct", "OrderCount", "TotalQty",
+        "GrossRevenue", "NetRevenue", "TotalProfit",
+        "TotalDiscount", "AvgMargin",
+    ])
 
 
 def fetch_dashboard_kpis() -> dict:
-    """
-    KPIs consolidados do DW para o painel executivo.
-    Usa o periodo real do DW (detectado via MAX de dim_tempo).
-    """
+    """KPIs consolidados para o painel executivo."""
     engine = get_engine()
 
-    # Detecta ultimo mes/ano real do DW
     with engine.connect() as conn:
-        r = conn.execute(text("SELECT MAX(ano) AS max_ano, MAX(mes) AS max_mes FROM dim_tempo WHERE ano = (SELECT MAX(ano) FROM dim_tempo)")).fetchone()
+        r = conn.execute(text("""
+            SELECT YEAR(MAX(dt.Data)) AS max_ano, MONTH(MAX(dt.Data)) AS max_mes
+            FROM FT_VENDAS fv
+            JOIN DIM_TEMPO dt ON fv.IDTempo = dt.IDSK
+            WHERE fv.Quant > 0 AND fv.TotLiq > 0
+        """)).fetchone()
         max_ano = int(r[0])
         max_mes = int(r[1])
 
     query = f"""
     SELECT
-        SUM(fv.receita_liquida)                             AS total_revenue,
-        SUM(fv.lucro_bruto)                                 AS total_profit,
-        SUM(fv.quantidade)                                  AS total_qty,
-        COUNT(DISTINCT fv.nk_pedido)                        AS total_orders,
-        COUNT(DISTINCT fv.sk_cliente)                       AS unique_customers,
-        AVG(fv.margem_percentual)                           AS avg_margin,
+        SUM(fv.TotLiq)                                                  AS total_revenue,
+        SUM(fv.TotLiq * ISNULL(dp.Margem, 0) / 100)                    AS total_profit,
+        SUM(fv.Quant)                                                   AS total_qty,
+        COUNT(DISTINCT fv.IDPed)                                        AS total_orders,
+        COUNT(DISTINCT fv.IDCliente)                                    AS unique_customers,
+        AVG(ISNULL(dp.Margem, 0))                                       AS avg_margin,
 
-        SUM(CASE WHEN dt.ano = {max_ano} AND dt.mes = {max_mes}
-             THEN fv.receita_liquida ELSE 0 END)            AS current_month_revenue,
+        SUM(CASE WHEN YEAR(dt.Data) = {max_ano} AND MONTH(dt.Data) = {max_mes}
+             THEN fv.TotLiq ELSE 0 END)                                 AS current_month_revenue,
 
-        SUM(CASE WHEN DATEFROMPARTS(dt.ano, dt.mes, 1) =
+        SUM(CASE WHEN DATEFROMPARTS(YEAR(dt.Data), MONTH(dt.Data), 1) =
                       DATEADD(MONTH, -1, DATEFROMPARTS({max_ano}, {max_mes}, 1))
-             THEN fv.receita_liquida ELSE 0 END)            AS prev_month_revenue,
+             THEN fv.TotLiq ELSE 0 END)                                 AS prev_month_revenue,
 
-        SUM(CASE WHEN dt.ano = {max_ano}
-             THEN fv.receita_liquida ELSE 0 END)            AS ytd_revenue,
+        SUM(CASE WHEN YEAR(dt.Data) = {max_ano}
+             THEN fv.TotLiq ELSE 0 END)                                 AS ytd_revenue,
 
-        SUM(CASE WHEN dt.ano = {max_ano - 1}
-             THEN fv.receita_liquida ELSE 0 END)            AS prev_year_revenue
-    FROM fato_vendas fv
-    JOIN dim_tempo dt ON fv.sk_tempo = dt.sk_tempo
+        SUM(CASE WHEN YEAR(dt.Data) = {max_ano - 1}
+             THEN fv.TotLiq ELSE 0 END)                                 AS prev_year_revenue
+    FROM FT_VENDAS fv
+    JOIN DIM_TEMPO   dt ON fv.IDTempo   = dt.IDSK
+    JOIN DIM_PRODUTO dp ON fv.IDProduto = dp.IDSK
+    WHERE fv.Quant > 0 AND fv.TotLiq > 0
     """
     with engine.connect() as conn:
         row = dict(conn.execute(text(query)).fetchone()._mapping)
