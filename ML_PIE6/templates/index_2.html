@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema Inteligente de Apoio à Decisão</title>
+    <style>
+        :root {
+            --primary: #2c4291;
+            --secondary: #3f37c9;
+            --accent: #4895ef;
+            --light: #f8f9fa;
+            --dark: #212529;
+            --success: #4bb543;
+            --error: #dc3545;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: 'Roboto', sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: var(--light);
+            color: var(--dark);
+        }
+
+        .navbar {
+            background-color: white;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 15px 30px;
+            display: flex;
+            align-items: center;
+        }
+
+        .logo { height: 50px; margin-right: 20px; }
+
+        .title h1 { margin: 0; font-size: 1.5em; color: var(--dark); }
+        .title small { display: block; font-size: 0.7em; color: #6c757d; }
+
+        .container { max-width: 1200px; margin: 30px auto; padding: 0 20px; }
+
+        .card {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            padding: 25px;
+            margin-bottom: 24px;
+        }
+
+        .card-title {
+            color: var(--primary);
+            margin-top: 0;
+            border-bottom: 2px solid var(--accent);
+            padding-bottom: 10px;
+        }
+
+        .btn {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            padding: 10px 22px;
+            border-radius: 50px;
+            cursor: pointer;
+            font-size: 15px;
+            transition: all 0.3s;
+        }
+        .btn:hover { background-color: var(--secondary); transform: translateY(-1px); }
+        .btn-outline {
+            background: transparent;
+            border: 2px solid var(--primary);
+            color: var(--primary);
+        }
+        .btn-outline:hover { background: var(--primary); color: white; }
+
+        /* KPIs */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 16px;
+            margin-bottom: 28px;
+        }
+        .kpi-card {
+            background: white;
+            border-radius: 8px;
+            padding: 16px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+            border-left: 4px solid var(--accent);
+            text-align: center;
+        }
+        .kpi-card.kpi-danger { border-left-color: var(--error); }
+        .kpi-card.kpi-warn   { border-left-color: #f4a261; }
+        .kpi-label { font-size: 0.75em; color: #6c757d; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 8px; }
+        .kpi-value { font-size: 1.5em; font-weight: bold; color: var(--primary); line-height: 1.2; }
+        .kpi-danger .kpi-value { color: var(--error); }
+        .kpi-warn   .kpi-value { color: #e76f00; }
+
+        /* Seções duplas */
+        .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; }
+        .section-title {
+            color: var(--primary);
+            font-size: 1em;
+            font-weight: bold;
+            border-bottom: 2px solid var(--accent);
+            padding-bottom: 6px;
+            margin: 0 0 12px 0;
+        }
+
+        /* Itens de lista */
+        .ml-alert-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 10px;
+            margin: 4px 0;
+            background: #fff3f3;
+            border-radius: 4px;
+            border-left: 3px solid var(--error);
+            font-size: 0.85em;
+        }
+        .ml-pattern-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 10px;
+            margin: 4px 0;
+            background: #f0f4ff;
+            border-radius: 4px;
+            border-left: 3px solid var(--accent);
+            font-size: 0.85em;
+        }
+
+        /* Tabela vendedores */
+        table { width: 100%; border-collapse: collapse; font-size: 0.88em; }
+        thead tr { background: var(--primary); color: white; }
+        th { padding: 9px 12px; text-align: left; font-weight: 500; }
+        td { padding: 8px 12px; }
+        tbody tr:nth-child(even) { background: #f8f9fa; }
+
+        /* Previsão */
+        .forecast-input-row { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; }
+        .forecast-input-row input {
+            padding: 9px 12px;
+            border-radius: 6px;
+            border: 1px solid #ddd;
+            width: 220px;
+            font-size: 14px;
+        }
+        .forecast-cards { display: flex; flex-wrap: wrap; gap: 10px; }
+        .ml-forecast-item {
+            background: #f0f4ff;
+            border-radius: 8px;
+            padding: 12px 18px;
+            text-align: center;
+            border: 1px solid #c5d3f5;
+            min-width: 120px;
+        }
+        .ml-forecast-month { font-size: 0.78em; color: #6c757d; }
+        .ml-forecast-val   { font-size: 1.6em; font-weight: bold; color: var(--primary); }
+        .ml-forecast-range { font-size: 0.75em; color: #999; }
+
+        .footer-row { display: flex; justify-content: flex-end; margin-top: 10px; }
+
+        .loading { color: #999; font-style: italic; font-size: 0.9em; }
+        .err     { color: var(--error); font-size: 0.88em; }
+
+        @media (max-width: 768px) {
+            .two-col { grid-template-columns: 1fr; }
+            .navbar  { flex-direction: column; text-align: center; }
+            .logo    { margin-right: 0; margin-bottom: 10px; }
+        }
+    </style>
+</head>
+<body>
+
+<nav class="navbar">
+    <img src="/static/images/Logo-UniSales_Horizontal.png" alt="UniSales" class="logo">
+    <div class="title">
+        <h1>Sistema Inteligente de Apoio à Decisão</h1>
+        <small>Para Distribuidoras do Setor Alimentar baseado em Machine Learning</small>
+    </div>
+</nav>
+
+<div class="container">
+
+    <!-- KPIs -->
+    <div class="kpi-grid">
+        <div class="kpi-card">
+            <div class="kpi-label">Receita Total</div>
+            <div class="kpi-value" id="val-receita">—</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-label">Lucro Total</div>
+            <div class="kpi-value" id="val-lucro">—</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-label">Total de Pedidos</div>
+            <div class="kpi-value" id="val-pedidos">—</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-label">Clientes Únicos</div>
+            <div class="kpi-value" id="val-clientes">—</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-label">Margem Média</div>
+            <div class="kpi-value" id="val-margem">—</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-label">Receita Último Mês</div>
+            <div class="kpi-value" id="val-mes-atual">—</div>
+            <div class="kpi-label" id="val-mom" style="margin-top:4px;font-size:0.85em;font-weight:bold"></div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-label">Receita Ano Ref.</div>
+            <div class="kpi-value" id="val-ytd">—</div>
+            <div class="kpi-label" id="val-yoy" style="margin-top:4px;font-size:0.85em;font-weight:bold"></div>
+        </div>
+        <div class="kpi-card kpi-danger">
+            <div class="kpi-label">Estoque Crítico</div>
+            <div class="kpi-value" id="val-criticos">—</div>
+        </div>
+        <div class="kpi-card kpi-warn">
+            <div class="kpi-label">Estoque Baixo</div>
+            <div class="kpi-value" id="val-baixos">—</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-label">Total Produtos</div>
+            <div class="kpi-value" id="val-produtos">—</div>
+        </div>
+    </div>
+
+    <!-- Alertas + Padrões -->
+    <div class="two-col">
+        <div class="card">
+            <h3 class="section-title">Produtos com Estoque Crítico</h3>
+            <div id="ml-criticos-list"><p class="loading">Carregando...</p></div>
+        </div>
+        <div class="card">
+            <h3 class="section-title">Padrões de Venda</h3>
+            <div id="ml-patterns-list"><p class="loading">Carregando...</p></div>
+        </div>
+    </div>
+
+    <!-- Top Vendedores -->
+    <div class="card">
+        <h3 class="section-title">Top Vendedores</h3>
+        <div style="overflow-x:auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Vendedor</th>
+                        <th>Território</th>
+                        <th style="text-align:right">Receita</th>
+                        <th style="text-align:right">Cota %</th>
+                    </tr>
+                </thead>
+                <tbody id="ml-sellers-body">
+                    <tr><td colspan="4" class="loading" style="padding:10px">Carregando...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Previsão de Demanda -->
+    <div class="card">
+        <h3 class="section-title">Previsão de Demanda</h3>
+        <div class="forecast-input-row">
+            <input type="number" id="ml-sk-input" placeholder="sk_produto (ex: 212)">
+            <button class="btn" onclick="loadForecast()">Buscar</button>
+        </div>
+        <div class="forecast-cards" id="ml-forecast-result"></div>
+    </div>
+
+    <div class="footer-row">
+        <button class="btn btn-outline" onclick="loadMLDashboard()">Atualizar Dashboard</button>
+    </div>
+
+</div>
+
+<script>
+    function fmt(n) {
+        if (n == null) return '—';
+        return 'R$ ' + Number(n).toLocaleString('pt-BR', {minimumFractionDigits: 0, maximumFractionDigits: 0});
+    }
+
+    async function loadMLDashboard() {
+        try {
+            const res  = await fetch('/api/ml/dashboard');
+            const data = await res.json();
+            if (data.error) { console.error(data.error); return; }
+
+            const k = data.kpis || {};
+            document.getElementById('val-receita').textContent  = fmt(k.total_revenue);
+            document.getElementById('val-lucro').textContent    = fmt(k.total_profit);
+            document.getElementById('val-pedidos').textContent  = (k.total_orders || 0).toLocaleString('pt-BR');
+            document.getElementById('val-clientes').textContent = (k.unique_customers || 0).toLocaleString('pt-BR');
+            document.getElementById('val-margem').textContent   = k.avg_margin_pct != null ? k.avg_margin_pct.toFixed(1) + '%' : '—';
+            document.getElementById('val-criticos').textContent = data.stock ? data.stock.critical : '—';
+            document.getElementById('val-baixos').textContent   = data.stock ? data.stock.low : '—';
+            document.getElementById('val-produtos').textContent = data.total_products || '—';
+
+            // Receita último mês + variação MoM
+            document.getElementById('val-mes-atual').textContent = fmt(k.current_month_revenue);
+            const momEl = document.getElementById('val-mom');
+            if (k.mom_change_pct != null) {
+                const sinal = k.mom_change_pct >= 0 ? '▲' : '▼';
+                momEl.textContent = sinal + ' ' + Math.abs(k.mom_change_pct).toFixed(1) + '% vs mês ant.';
+                momEl.style.color = k.mom_change_pct >= 0 ? 'var(--success)' : 'var(--error)';
+            } else {
+                momEl.textContent = '';
+            }
+
+            // Receita ano referência + variação YoY
+            document.getElementById('val-ytd').textContent = fmt(k.ytd_revenue);
+            const yoyEl = document.getElementById('val-yoy');
+            if (k.yoy_change_pct != null) {
+                const sinal = k.yoy_change_pct >= 0 ? '▲' : '▼';
+                yoyEl.textContent = sinal + ' ' + Math.abs(k.yoy_change_pct).toFixed(1) + '% vs ano ant.';
+                yoyEl.style.color = k.yoy_change_pct >= 0 ? 'var(--success)' : 'var(--error)';
+            } else {
+                yoyEl.textContent = '';
+            }
+
+            // Alertas críticos
+            const critList = document.getElementById('ml-criticos-list');
+            critList.innerHTML = '';
+            const criticos = (data.stock || {}).top_critical || [];
+            if (!criticos.length) {
+                critList.innerHTML = '<p class="loading">Nenhum produto crítico</p>';
+            } else {
+                criticos.forEach(p => {
+                    const el = document.createElement('div');
+                    el.className = 'ml-alert-item';
+                    el.innerHTML = '<span>' + p.ProductName + '</span>'
+                        + '<span style="color:var(--error);font-weight:bold">sk ' + p.ProductID + '</span>';
+                    critList.appendChild(el);
+                });
+            }
+
+            // Padrões de venda
+            const patList = document.getElementById('ml-patterns-list');
+            patList.innerHTML = '';
+            (data.patterns || []).forEach(pt => {
+                const el = document.createElement('div');
+                el.className = 'ml-pattern-item';
+                el.innerHTML = '<span>' + pt.pattern + '</span>'
+                    + '<span style="font-weight:bold">' + pt.product_count + ' produtos</span>';
+                patList.appendChild(el);
+            });
+
+            // Vendedores
+            const tbody = document.getElementById('ml-sellers-body');
+            tbody.innerHTML = '';
+            const sellers = data.top_sellers || [];
+            if (!sellers.length) {
+                tbody.innerHTML = '<tr><td colspan="4" class="loading" style="padding:10px">Sem dados de vendedores</td></tr>';
+            } else {
+                sellers.forEach((s, i) => {
+                    const tr = document.createElement('tr');
+                    const cota = s.QuotaAttainmentPct != null ? s.QuotaAttainmentPct.toFixed(1) + '%' : '—';
+                    tr.innerHTML = '<td>' + s.SellerName + '</td>'
+                        + '<td>' + (s.Territory || '—') + '</td>'
+                        + '<td style="text-align:right">' + fmt(s.TotalRevenue) + '</td>'
+                        + '<td style="text-align:right">' + cota + '</td>';
+                    tbody.appendChild(tr);
+                });
+            }
+
+        } catch (e) {
+            console.error('Erro ao carregar dashboard ML:', e);
+        }
+    }
+
+    async function loadForecast() {
+        const sk  = document.getElementById('ml-sk-input').value.trim();
+        const div = document.getElementById('ml-forecast-result');
+        if (!sk) { div.innerHTML = '<p class="err">Informe o sk_produto</p>'; return; }
+        div.innerHTML = '<p class="loading">Carregando...</p>';
+        try {
+            const res  = await fetch('/api/ml/forecast/' + sk);
+            const data = await res.json();
+            if (data.error) { div.innerHTML = '<p class="err">' + data.error + '</p>'; return; }
+            div.innerHTML = '';
+            (data.forecast || []).forEach(f => {
+                const el = document.createElement('div');
+                el.className = 'ml-forecast-item';
+                el.innerHTML = '<div class="ml-forecast-month">' + f.month + '</div>'
+                    + '<div class="ml-forecast-val">' + f.forecast + '</div>'
+                    + '<div class="ml-forecast-range">' + f.lower + ' – ' + f.upper + ' un</div>';
+                div.appendChild(el);
+            });
+        } catch (e) {
+            div.innerHTML = '<p class="err">Erro ao buscar previsão</p>';
+        }
+    }
+
+    // Carrega ao abrir a página
+    loadMLDashboard();
+</script>
+</body>
+</html>
