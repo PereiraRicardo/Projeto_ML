@@ -1,0 +1,25 @@
+# ─── Já instalados no seu projeto atual ───────────────
+flask
+opencv-python
+numpy
+Pillow
+ultralytics
+werkzeug
+
+# ─── Novos: conexão com SQL Server ────────────────────
+pyodbc           # conexão ODBC com SQL Server
+SQLAlchemy       # engine para pandas
+pandas           # manipulação de dados
+
+# ─── Novos: Machine Learning ──────────────────────────
+scikit-learn     # RandomForest, KMeans, GradientBoosting, StandardScaler
+joblib           # salvar/carregar modelos .pkl
+
+# ─── Opcional: séries temporais (recomendado) ─────────
+# prophet        # previsão de demanda com sazonalidade
+                 # Instale separado: pip install prophet
+                 # Requer compilador C++ (ou: conda install -c conda-forge prophet)
+
+# ─── Instalação rápida dos novos pacotes ──────────────
+# pip install pyodbc sqlalchemy pandas scikit-learn joblib
+# pip install prophet  (opcional)
